@@ -1,7 +1,10 @@
 import pathlib
 import glob
+import signal
+import queue
 import multiprocessing
 import yaml
+import scipy
 from skimage.morphology import white_tophat, black_tophat, disk
 import numpy as np
 import tifffile
@@ -31,7 +34,7 @@ def calculate_psf(voxel_size_z, voxel_size_yx, Ex, Em, NA, RI, microscope):
 
 
 # subtract background
-def subtract_background(image, radius=5, light_bg=False):
+def subtract_background(image, radius, light_bg=False):
     # you can also use 'ball' here to get a slightly smoother result at the
     # cost of increased computing time
     str_el = disk(radius)
@@ -51,11 +54,12 @@ def image_processing_function(image_path, config):
     image = tifffile.imread(image_path)
 
     # segment with cellpose
+    seg_img = np.max(image[:, config["seg_ch"], :, :], 0)
     if config["cp_search_string"] in image_path:
-        seg_img = np.max(image[:, config["dapi_ch"], :, :], 0)
         seg_img = np.clip(seg_img, 0, config["cp_clip"])
-    else:
-        seg_img = np.max(image[:, 1, :, :], 0)
+    seg_img = scipy.ndimage.median_filter(
+        seg_img, size=config["median_filter"]
+    )
     model = models.Cellpose(gpu=config["gpu"], model_type="cyto")
     channels = [0, 0]  # greyscale segmentation
     masks = model.eval(
@@ -63,6 +67,7 @@ def image_processing_function(image_path, config):
         channels=channels,
         diameter=config["diameter"],
         do_3D=config["do_3D"],
+        flow_threshold=config["flow_threshold"],
     )[0]
 
     # Calculate PSF
@@ -80,11 +85,10 @@ def image_processing_function(image_path, config):
     for image_channel in image_channels:
         # detect spots
         rna = image[:, image_channel, :, :]
-        rna = rna[:, :512, :512]  # TODO: cropping?
         # subtract background
         rna_no_bg = []
         for z in rna:
-            z_no_bg = subtract_background(z)
+            z_no_bg = subtract_background(z, config["bg_radius"])
             rna_no_bg.append(z_no_bg)
         rna = np.array(rna_no_bg)
 
@@ -94,11 +98,14 @@ def image_processing_function(image_path, config):
         # local maximum detection
         mask = detection.local_maximum_detection(rna_log, min_distance=sigma)
 
-        # thresholding
-        if config["thresh_search_str1"] in image_path:
-            threshold = config["thresh1"]
+        # tresholding
+        if image_channel == config["smFISH_ch1"]:
+            threshold = config["smFISH_ch1_thresh"]
+        elif image_channel == config["smFISH_ch2"]:
+            threshold = config["smFISH_ch2_thresh"]
         else:
-            threshold = config["thresh2"]
+            print("smFISH channel and threshold not correctly defined!")
+
         spots, _ = detection.spots_thresholding(rna_log, mask, threshold)
 
         # detect and decompose clusters
@@ -109,8 +116,8 @@ def image_processing_function(image_path, config):
             voxel_size_yx,
             psf_z,
             psf_yx,
-            alpha=0.7,  # alpha impacts the number of spots per cluster
-            beta=1,  # beta impacts the number of detected clusters
+            alpha=config["alpha"],  # impacts number of spots per cluster
+            beta=config["beta"],  # impacts the number of detected clusters
         )[0]
 
         # separate spots from clusters
@@ -118,7 +125,7 @@ def image_processing_function(image_path, config):
             spots_post_decomposition,
             voxel_size_z,
             voxel_size_yx,
-            config["radius"],
+            config["bf_radius"],
             config["nb_min_spots"],
         )
 
@@ -136,31 +143,82 @@ def image_processing_function(image_path, config):
             others_image={"smfish": rna_mip},
         )
 
-        # save results
+        # save bigfish results
         for i, cell_results in enumerate(fov_results):
             output_path = pathlib.Path(config["output_dir"]).joinpath(
-                f"{pathlib.Path(image_path).name}_ch{image_channel+1}_results_cell_{i}.npz"
+                f"{pathlib.Path(image_path).stem}_ch{image_channel+1}_"
+                f"results_cell_{i}.npz"
             )
             stack.save_cell_extracted(cell_results, str(output_path))
 
+        # save reference spot for each image
+        # (Using undenoised image! not from denoised!)
+        reference_spot_undenoised = detection.build_reference_spot(
+            rna,
+            spots,
+            voxel_size_z,
+            voxel_size_yx,
+            psf_z,
+            psf_yx,
+            alpha=config["alpha"],
+        )
+        spot_output_path = pathlib.Path(config["output_refspot_dir"]).joinpath(
+            f"{pathlib.Path(image_path).stem}_reference_spot_"
+            f"ch{image_channel+1}"
+        )
+        stack.save_image(
+            reference_spot_undenoised, str(spot_output_path), "tif"
+        )
 
-def image_processing_function_wrapper(args):
-    return image_processing_function(*args)
+
+def worker_function(jobs, results):
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    while not jobs.empty():
+        try:
+            job = jobs.get(block=False)
+            results.put(image_processing_function(*job))
+        except queue.Empty:
+            pass
 
 
 def main():
-    # Main entry point of the program
-    # load config file
+    jobs = multiprocessing.Queue()
+    results = multiprocessing.Queue()
+
+    # Load the config file
     with open("smFISH_analysis_config.yaml") as fi:
         config = yaml.load(fi, Loader=yaml.Loader)
-    # Check if output dir exists; try to create it if not
+
+    # Check if output directories exists; try to create them if they don't
     pathlib.Path(config["output_dir"]).mkdir(exist_ok=True)
-    # multiprocessing.set_start_method("spawn") # TODO: revise
-    with multiprocessing.Pool(config["number_of_workers"]) as p:
-        image_paths = glob.glob(config["input_pattern"])
-        process_data = [(image_path, config) for image_path in image_paths]
-        p.map(image_processing_function_wrapper, process_data)
+    pathlib.Path(config["output_refspot_dir"]).mkdir(exist_ok=True)
+
+    # Populate the job queue
+    image_paths = glob.glob(config["input_pattern"])
+    for image_path in image_paths:
+        jobs.put((image_path, config))
+
+    # Start workers
+    workers = []
+    for i in range(config["number_of_workers"]):
+        p = multiprocessing.Process(
+            target=worker_function, args=(jobs, results)
+        )
+        p.start()
+        workers.append(p)
+
+    # Wait for workers to complete
+    try:
+        for worker in workers:
+            worker.join()
+    except KeyboardInterrupt:
+        for worker in workers:
+            worker.terminate()
+            worker.join()
 
 
 if __name__ == "__main__":
+    # Set the process start method; spawn is default on Windows
+    multiprocessing.set_start_method("spawn")
+    # Call the main function
     main()
