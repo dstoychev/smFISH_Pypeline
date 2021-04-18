@@ -1,6 +1,0 @@
-{
-	"number_of_workers": 32,
-	"output_dir": "C:\\Users\\Micron Oxford\\Desktop\\tstdir",
-	"input_pattern": "C:\\Users\\Micron Oxford\\Desktop\\test_*.tif"
-	
-}

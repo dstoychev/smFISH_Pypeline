@@ -1,0 +1,34 @@
+# The number of processes in the pool of processes
+number_of_workers: 32
+# The directory with images
+input_pattern: C:\\Users\\Danny\\Desktop\\smFISH_Pypeline\\input\\*.tif
+# The directory where the output data will be stored
+output_dir: C:\\Users\\Danny\\Desktop\\smFISH_Pypeline\\output
+# The channels for which to run the processing
+channels: [2, 3]
+# Data voxel sizes
+voxel_size_yx: 65
+voxel_size_z: 200
+# String which identifies cp CLIP data
+cp_search_string: R1
+# Clip segmentation parameters
+dapi_ch: 2
+cp_clip: 200
+# Boolean flag to toggle GPU support in Cellpose
+gpu: True
+# Cellpose parameters
+diameter: 375
+do_3D: False # Enable 3D segmentation of 4D data
+# PSF parameters
+ex: 570
+em: 610
+NA: 1.4
+RI: 1.364
+microscope: confocal # widefield of nipkow
+# big-fish spot thresholding parameters
+thresh_search_str1: R1
+thresh1: 100
+thresh2: 30
+# big-fish foci detection parameters
+radius: 350
+nb_min_spots: 4

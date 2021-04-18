@@ -1,7 +1,7 @@
 import pathlib
-import json
 import glob
 import multiprocessing
+import yaml
 from skimage.morphology import white_tophat, black_tophat, disk
 import numpy as np
 import tifffile
@@ -42,16 +42,10 @@ def subtract_background(image, radius=5, light_bg=False):
 
 
 def image_processing_function(image_path, config):
-    # TODO: check config in some way; important to have parameters such as output_dir defined
 
-    # TODO: revise those
-    image_channels = config["channels"]  # originally an argument
-    voxel_size_yx = config[
-        "voxel_size_yx"
-    ]  # originally determined in a weird way
-    voxel_size_z = config[
-        "voxel_size_z"
-    ]  # originally determined in a weird way
+    image_channels = config["channels"]
+    voxel_size_yx = config["voxel_size_yx"]
+    voxel_size_z = config["voxel_size_z"]
 
     # Read the image into a numpy array of format ZCYX
     image = tifffile.imread(image_path)
@@ -120,14 +114,12 @@ def image_processing_function(image_path, config):
         )[0]
 
         # separate spots from clusters
-        radius = config["radius"]
-        nb_min_spots = config["nb_min_spots"]
         spots_post_clustering, foci = detection.detect_foci(
             spots_post_decomposition,
             voxel_size_z,
             voxel_size_yx,
-            radius,
-            nb_min_spots,
+            config["radius"],
+            config["nb_min_spots"],
         )
 
         # extract cell level results
@@ -147,9 +139,9 @@ def image_processing_function(image_path, config):
         # save results
         for i, cell_results in enumerate(fov_results):
             output_path = pathlib.Path(config["output_dir"]).joinpath(
-                f"{image_path.name}_ch{image_channel+1}_results_cell_{i}.npz"
+                f"{pathlib.Path(image_path).name}_ch{image_channel+1}_results_cell_{i}.npz"
             )
-            stack.save_cell_extracted(cell_results, output_path)
+            stack.save_cell_extracted(cell_results, str(output_path))
 
 
 def image_processing_function_wrapper(args):
@@ -159,15 +151,14 @@ def image_processing_function_wrapper(args):
 def main():
     # Main entry point of the program
     # load config file
-    with open("smFISH_analysis_config.json") as fi:
-        config = json.load(fi)
+    with open("smFISH_analysis_config.yaml") as fi:
+        config = yaml.load(fi, Loader=yaml.Loader)
     # Check if output dir exists; try to create it if not
     pathlib.Path(config["output_dir"]).mkdir(exist_ok=True)
     # multiprocessing.set_start_method("spawn") # TODO: revise
     with multiprocessing.Pool(config["number_of_workers"]) as p:
         image_paths = glob.glob(config["input_pattern"])
         process_data = [(image_path, config) for image_path in image_paths]
-        print("Processing data:", process_data)
         p.map(image_processing_function_wrapper, process_data)
 
 
