@@ -4,6 +4,7 @@ import signal
 import queue
 import multiprocessing
 import threading
+import time
 import getpass
 import omero.gateway
 import yaml
@@ -47,21 +48,22 @@ def subtract_background(image, radius, light_bg=False):
         return white_tophat(image, str_el)
 
 
-def image_processing_function(image_loc, config, conn):
+def image_processing_function(image_loc, config):
     # Read the image into a numpy array of format ZCYX
     if isinstance(image_loc, str):
         image_name = pathlib.Path(image_loc).stem
         image = tifffile.imread(image_loc)
     else:
         image_name = image_loc[0]
-        remote_image = conn.getObject("Image", iamge_loc[1])
         image = np.array(
             list(
-                remote_image.getPrimaryPixels().getPlanes(
+                image_loc[1]
+                .getPrimaryPixels()
+                .getPlanes(
                     [
                         (z, c, 0)
-                        for z in range(0, remote_image.getSizeZ())
-                        for c in range(0, remote_image.getSizeC())
+                        for z in range(0, image_loc[1].getSizeZ())
+                        for c in range(0, image_loc[1].getSizeC())
                     ]
                 )
             )
@@ -240,9 +242,15 @@ def main():
         # Fetch the images and their original names
         for dataset_id in config["OMERO_datasets"]:
             for image in conn.getObject("dataset", dataset_id).listChildren():
-                for orig_file in dataset.getImportedImageFiles():
+                for orig_file in image.getImportedImageFiles():
                     jobs.put(
-                        ((orig_file.getName(), image.getId()), config, conn)
+                        (
+                            (
+                                orig_file.getName(),
+                                conn.getObject("Image", image.getId()),
+                            ),
+                            config,
+                        )
                     )
     else:
         # Get images using the input path pattern
