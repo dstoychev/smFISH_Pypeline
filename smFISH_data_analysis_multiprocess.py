@@ -84,6 +84,12 @@ def image_processing_function(image_loc, config):
                 )
             )
         )
+        image = image.reshape(
+            image.shape[0] // remote_image.getSizeC(),
+            remote_image.getSizeC(),
+            image.shape[1],
+            image.shape[2],
+        )
 
     # segment with cellpose
     seg_img = np.max(image[:, config["seg_ch"], :, :], 0)
