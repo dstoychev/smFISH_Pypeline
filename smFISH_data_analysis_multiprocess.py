@@ -17,6 +17,9 @@ import bigfish.detection as detection
 from cellpose import models
 
 
+OMERO_CONNECTION = None
+
+
 # calculate psf (thank you MK), with edit for consistent nomenclature
 def calculate_psf(voxel_size_z, voxel_size_yx, Ex, Em, NA, RI, microscope):
     """
@@ -55,7 +58,18 @@ def image_processing_function(image_loc, config):
         image = tifffile.imread(image_loc)
     else:
         image_name = image_loc[0]
-        image = image_loc[1]
+        remote_image = OMERO_CONNECTION.getObject("Image", image_loc[1])
+        image = np.array(
+            list(
+                remote_image.getPrimaryPixels().getPlanes(
+                    [
+                        (z, c, 0)
+                        for z in range(0, remote_image.getSizeZ())
+                        for c in range(0, remote_image.getSizeC())
+                    ]
+                )
+            )
+        )
 
     # segment with cellpose
     seg_img = np.max(image[:, config["seg_ch"], :, :], 0)
@@ -205,59 +219,40 @@ def main():
     pathlib.Path(config["output_refspot_dir"]).mkdir(exist_ok=True)
 
     # Fill the job queue either with local or remote files
-    conn = None
+    global OMERO_CONNECTION
     if "OMERO_user" in config:
         # Ask for password
         password = getpass.getpass(
             f"Type password for user '{config['OMERO_user']}':"
         )
         # Establish connection with OMERO and actually connect
-        conn = omero.gateway.BlitzGateway(
+        OMERO_CONNECTION = omero.gateway.BlitzGateway(
             host="omero1.bioch.ox.ac.uk",
             port=4064,
             # group=config["OMERO_group"],
             username=config["OMERO_user"],
             passwd=password,
         )
-        conn.connect()
-        conn.SERVICE_OPTS.setOmeroGroup(-1)
+        OMERO_CONNECTION.connect()
+        OMERO_CONNECTION.SERVICE_OPTS.setOmeroGroup(-1)
         # Create a thread to keep the connection alive
         ka_thread = threading.Thread(
-            target=keep_connection_alive, args=(conn,)
+            target=keep_connection_alive, args=(OMERO_CONNECTION,)
         )
         ka_thread.daemon = True
         ka_thread.start()
         # Fetch the images and their original names
         for dataset_id in config["OMERO_datasets"]:
-            for image in conn.getObject("dataset", dataset_id).listChildren():
-                for orig_file in image.getImportedImageFiles():
-                    image = np.array(
-                        list(
-                            conn.getObject("Image", image.getId())
-                            .getPrimaryPixels()
-                            .getPlanes(
-                                [
-                                    (z, c, 0)
-                                    for z in range(0, image_loc[1].getSizeZ())
-                                    for c in range(0, image_loc[1].getSizeC())
-                                ]
-                            )
-                        )
-                    )
-                    jobs.put(
-                        (
-                            (
-                                orig_file.getName(),
-                                image,
-                            ),
-                            config,
-                        )
-                    )
+            for image in OMERO_CONNECTION.getObject(
+                "dataset", dataset_id
+            ).listChildren():
+                for orig_file in dataset.getImportedImageFiles():
+                    jobs.put(((orig_file.getName(), image.getId()), config))
     else:
         # Get images using the input path pattern
         image_paths = glob.glob(config["input_pattern"])
         for image_path in image_paths:
-            jobs.put((image_path, config, conn))
+            jobs.put((image_path, config))
 
     # Start workers
     workers = []
