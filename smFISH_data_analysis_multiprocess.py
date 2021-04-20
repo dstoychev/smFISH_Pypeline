@@ -71,7 +71,7 @@ def image_processing_function(image_loc, config):
         ka_thread.daemon = True
         ka_thread.start()
         # Derive image and its name
-        image_name = image_loc[0]
+        image_name = pathlib.Path(image_loc[0]).stem
         remote_image = conn.getObject("Image", image_loc[1])
         image = np.array(
             list(
