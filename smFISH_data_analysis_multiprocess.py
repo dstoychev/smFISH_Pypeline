@@ -17,9 +17,6 @@ import bigfish.detection as detection
 from cellpose import models
 
 
-OMERO_CONNECTION = None
-
-
 # calculate psf (thank you MK), with edit for consistent nomenclature
 def calculate_psf(voxel_size_z, voxel_size_yx, Ex, Em, NA, RI, microscope):
     """
@@ -57,8 +54,25 @@ def image_processing_function(image_loc, config):
         image_name = pathlib.Path(image_loc).stem
         image = tifffile.imread(image_loc)
     else:
+        # Establish connection with OMERO and actually connect
+        conn = omero.gateway.BlitzGateway(
+            host="omero1.bioch.ox.ac.uk",
+            port=4064,
+            # group=config["OMERO_group"],
+            username=config["OMERO_user"],
+            passwd=config["password"],
+        )
+        conn.connect()
+        conn.SERVICE_OPTS.setOmeroGroup(-1)
+        # Create a thread to keep the connection alive
+        ka_thread = threading.Thread(
+            target=keep_connection_alive, args=(conn,)
+        )
+        ka_thread.daemon = True
+        ka_thread.start()
+        # Derive image and its name
         image_name = image_loc[0]
-        remote_image = OMERO_CONNECTION.getObject("Image", image_loc[1])
+        remote_image = conn.getObject("Image", image_loc[1])
         image = np.array(
             list(
                 remote_image.getPrimaryPixels().getPlanes(
@@ -189,6 +203,9 @@ def image_processing_function(image_loc, config):
             reference_spot_undenoised, str(spot_output_path), "tif"
         )
 
+    # Close the OMERO connection
+    conn.close()
+
 
 def worker_function(jobs, results):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -219,34 +236,28 @@ def main():
     pathlib.Path(config["output_refspot_dir"]).mkdir(exist_ok=True)
 
     # Fill the job queue either with local or remote files
-    global OMERO_CONNECTION
     if "OMERO_user" in config:
         # Ask for password
         password = getpass.getpass(
             f"Type password for user '{config['OMERO_user']}':"
         )
+        config["password"] = password
         # Establish connection with OMERO and actually connect
-        OMERO_CONNECTION = omero.gateway.BlitzGateway(
+        conn = omero.gateway.BlitzGateway(
             host="omero1.bioch.ox.ac.uk",
             port=4064,
             # group=config["OMERO_group"],
             username=config["OMERO_user"],
             passwd=password,
         )
-        OMERO_CONNECTION.connect()
-        OMERO_CONNECTION.SERVICE_OPTS.setOmeroGroup(-1)
-        # Create a thread to keep the connection alive
-        ka_thread = threading.Thread(
-            target=keep_connection_alive, args=(OMERO_CONNECTION,)
-        )
-        ka_thread.daemon = True
-        ka_thread.start()
+        conn.connect()
+        conn.SERVICE_OPTS.setOmeroGroup(-1)
         # Fetch the images and their original names
         for dataset_id in config["OMERO_datasets"]:
             for image in OMERO_CONNECTION.getObject(
                 "dataset", dataset_id
             ).listChildren():
-                for orig_file in dataset.getImportedImageFiles():
+                for orig_file in image.getImportedImageFiles():
                     jobs.put(((orig_file.getName(), image.getId()), config))
     else:
         # Get images using the input path pattern
