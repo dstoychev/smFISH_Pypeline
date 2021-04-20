@@ -3,6 +3,9 @@ import glob
 import signal
 import queue
 import multiprocessing
+import threading
+import getpass
+import omero.gateway
 import yaml
 import scipy
 from skimage.morphology import white_tophat, black_tophat, disk
@@ -44,18 +47,29 @@ def subtract_background(image, radius, light_bg=False):
         return white_tophat(image, str_el)
 
 
-def image_processing_function(image_path, config):
-
-    image_channels = config["channels"]
-    voxel_size_yx = config["voxel_size_yx"]
-    voxel_size_z = config["voxel_size_z"]
-
+def image_processing_function(image_loc, config, conn):
     # Read the image into a numpy array of format ZCYX
-    image = tifffile.imread(image_path)
+    if isinstance(image_loc, str):
+        image_name = pathlib.Path(image_loc).stem
+        image = tifffile.imread(image_loc)
+    else:
+        image_name = image_loc[0]
+        remote_image = conn.getObject("Image", iamge_loc[1])
+        image = np.array(
+            list(
+                remote_image.getPrimaryPixels().getPlanes(
+                    [
+                        (z, c, 0)
+                        for z in range(0, remote_image.getSizeZ())
+                        for c in range(0, remote_image.getSizeC())
+                    ]
+                )
+            )
+        )
 
     # segment with cellpose
     seg_img = np.max(image[:, config["seg_ch"], :, :], 0)
-    if config["cp_search_string"] in image_path:
+    if config["cp_search_string"] in image_name:
         seg_img = np.clip(seg_img, 0, config["cp_clip"])
     seg_img = scipy.ndimage.median_filter(
         seg_img, size=config["median_filter"]
@@ -72,17 +86,19 @@ def image_processing_function(image_path, config):
 
     # Calculate PSF
     psf_z, psf_yx = calculate_psf(
-        voxel_size_z,
-        voxel_size_yx,
+        config["voxel_size_z"],
+        config["voxel_size_yx"],
         config["ex"],
         config["em"],
         config["NA"],
         config["RI"],
         config["microscope"],
     )
-    sigma = detection.get_sigma(voxel_size_z, voxel_size_yx, psf_z, psf_yx)
+    sigma = detection.get_sigma(
+        config["voxel_size_z"], config["voxel_size_yx"], psf_z, psf_yx
+    )
 
-    for image_channel in image_channels:
+    for image_channel in config["channels"]:
         # detect spots
         rna = image[:, image_channel, :, :]
         # subtract background
@@ -112,8 +128,8 @@ def image_processing_function(image_path, config):
         spots_post_decomposition = detection.decompose_cluster(
             rna,
             spots,
-            voxel_size_z,
-            voxel_size_yx,
+            config["voxel_size_z"],
+            config["voxel_size_yx"],
             psf_z,
             psf_yx,
             alpha=config["alpha"],  # impacts number of spots per cluster
@@ -123,8 +139,8 @@ def image_processing_function(image_path, config):
         # separate spots from clusters
         spots_post_clustering, foci = detection.detect_foci(
             spots_post_decomposition,
-            voxel_size_z,
-            voxel_size_yx,
+            config["voxel_size_z"],
+            config["voxel_size_yx"],
             config["bf_radius"],
             config["nb_min_spots"],
         )
@@ -146,8 +162,7 @@ def image_processing_function(image_path, config):
         # save bigfish results
         for i, cell_results in enumerate(fov_results):
             output_path = pathlib.Path(config["output_dir"]).joinpath(
-                f"{pathlib.Path(image_path).stem}_ch{image_channel+1}_"
-                f"results_cell_{i}.npz"
+                f"{image_name}_ch{image_channel + 1}_results_cell_{i}.npz"
             )
             stack.save_cell_extracted(cell_results, str(output_path))
 
@@ -156,15 +171,14 @@ def image_processing_function(image_path, config):
         reference_spot_undenoised = detection.build_reference_spot(
             rna,
             spots,
-            voxel_size_z,
-            voxel_size_yx,
+            config["voxel_size_z"],
+            config["voxel_size_yx"],
             psf_z,
             psf_yx,
             alpha=config["alpha"],
         )
         spot_output_path = pathlib.Path(config["output_refspot_dir"]).joinpath(
-            f"{pathlib.Path(image_path).stem}_reference_spot_"
-            f"ch{image_channel+1}"
+            f"{image_name}_reference_spot_ch{image_channel + 1}"
         )
         stack.save_image(
             reference_spot_undenoised, str(spot_output_path), "tif"
@@ -181,6 +195,12 @@ def worker_function(jobs, results):
             pass
 
 
+def keep_connection_alive(conn):
+    while True:
+        conn.keepAlive()
+        time.sleep(60)
+
+
 def main():
     jobs = multiprocessing.Queue()
     results = multiprocessing.Queue()
@@ -193,10 +213,41 @@ def main():
     pathlib.Path(config["output_dir"]).mkdir(exist_ok=True)
     pathlib.Path(config["output_refspot_dir"]).mkdir(exist_ok=True)
 
-    # Populate the job queue
-    image_paths = glob.glob(config["input_pattern"])
-    for image_path in image_paths:
-        jobs.put((image_path, config))
+    # Fill the job queue either with local or remote files
+    conn = None
+    if "OMERO_user" in config:
+        # Ask for password
+        password = getpass.getpass(
+            f"Type password for user '{config['OMERO_user']}':"
+        )
+        # Establish connection with OMERO and actually connect
+        conn = omero.gateway.BlitzGateway(
+            host="omero1.bioch.ox.ac.uk",
+            port=4064,
+            # group=config["OMERO_group"],
+            username=config["OMERO_user"],
+            passwd=password,
+        )
+        conn.connect()
+        conn.SERVICE_OPTS.setOmeroGroup(-1)
+        # Create a thread to keep the connection alive
+        ka_thread = threading.Thread(
+            target=keep_connection_alive, args=(conn,)
+        )
+        ka_thread.daemon = True
+        ka_thread.start()
+        # Fetch the images and their original names
+        for dataset_id in config["OMERO_datasets"]:
+            for image in conn.getObject("dataset", dataset_id).listChildren():
+                for orig_file in dataset.getImportedImageFiles():
+                    jobs.put(
+                        ((orig_file.getName(), image.getId()), config, conn)
+                    )
+    else:
+        # Get images using the input path pattern
+        image_paths = glob.glob(config["input_pattern"])
+        for image_path in image_paths:
+            jobs.put((image_path, config, conn))
 
     # Start workers
     workers = []

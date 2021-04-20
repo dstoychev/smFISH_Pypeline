@@ -1,16 +1,22 @@
-# The number of processes in the pool of processes
+# General configuration
+## The number of processes in the pool of processes
 number_of_workers: 32
-# The directory with images
+## The directory with images
 input_pattern: C:\\Users\\Danny\\Desktop\\smFISH_Pypeline\\input\\*.tif
-# The directory where the big-fish output data will be stored
+## The directory where the big-fish output data will be stored
 output_dir: C:\\Users\\Danny\\Desktop\\smFISH_Pypeline\\output
-# The directory where the reference spot output data will be stored
+## The directory where the reference spot output data will be stored
 output_refspot_dir: C:\\Users\\Danny\\Desktop\\smFISH_Pypeline\\output_ref_spot
-# The channels for which to run the processing
+## The channels for which to run the processing
 channels: [2, 3]
-# Data voxel sizes
+## Data voxel sizes
 voxel_size_yx: 65
 voxel_size_z: 200
+
+# OMERO configuration
+OMERO_user: user1234
+## A dictionary of datasets and associated search strings
+OMERO_datasets: {"25097": "2h", "25098": "6h"}
 
 # Cellpose configuration
 ## Channel to segment
