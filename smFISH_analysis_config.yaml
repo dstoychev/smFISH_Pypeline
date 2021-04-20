@@ -29,7 +29,8 @@ cp_clip: 200
 median_filter: 20
 ## Cellpose parameters
 diameter: 325
-flow_threshold: 0.9 
+flow_threshold: 0.9
+cellprob_threshold: -6
 do_3D: False # Enable 3D segmentation of 4D data
 ## Boolean flag to toggle GPU support in Cellpose
 gpu: True

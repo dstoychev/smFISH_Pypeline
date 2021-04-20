@@ -82,6 +82,7 @@ def image_processing_function(image_loc, config, conn):
         diameter=config["diameter"],
         do_3D=config["do_3D"],
         flow_threshold=config["flow_threshold"],
+        cellprob_threshold=config["cellprob_threshold"],
     )[0]
 
     # Calculate PSF
