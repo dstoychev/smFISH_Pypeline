@@ -55,19 +55,7 @@ def image_processing_function(image_loc, config):
         image = tifffile.imread(image_loc)
     else:
         image_name = image_loc[0]
-        image = np.array(
-            list(
-                image_loc[1]
-                .getPrimaryPixels()
-                .getPlanes(
-                    [
-                        (z, c, 0)
-                        for z in range(0, image_loc[1].getSizeZ())
-                        for c in range(0, image_loc[1].getSizeC())
-                    ]
-                )
-            )
-        )
+        image = image_loc[1]
 
     # segment with cellpose
     seg_img = np.max(image[:, config["seg_ch"], :, :], 0)
@@ -243,11 +231,24 @@ def main():
         for dataset_id in config["OMERO_datasets"]:
             for image in conn.getObject("dataset", dataset_id).listChildren():
                 for orig_file in image.getImportedImageFiles():
+                    image = np.array(
+                        list(
+                            conn.getObject("Image", image.getId())
+                            .getPrimaryPixels()
+                            .getPlanes(
+                                [
+                                    (z, c, 0)
+                                    for z in range(0, image_loc[1].getSizeZ())
+                                    for c in range(0, image_loc[1].getSizeC())
+                                ]
+                            )
+                        )
+                    )
                     jobs.put(
                         (
                             (
                                 orig_file.getName(),
-                                conn.getObject("Image", image.getId()),
+                                image,
                             ),
                             config,
                         )
