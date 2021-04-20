@@ -254,9 +254,7 @@ def main():
         conn.SERVICE_OPTS.setOmeroGroup(-1)
         # Fetch the images and their original names
         for dataset_id in config["OMERO_datasets"]:
-            for image in OMERO_CONNECTION.getObject(
-                "dataset", dataset_id
-            ).listChildren():
+            for image in conn.getObject("dataset", dataset_id).listChildren():
                 for orig_file in image.getImportedImageFiles():
                     jobs.put(((orig_file.getName(), image.getId()), config))
     else:
@@ -264,6 +262,9 @@ def main():
         image_paths = glob.glob(config["input_pattern"])
         for image_path in image_paths:
             jobs.put((image_path, config))
+
+    # Close OMERO connection
+    conn.close()
 
     # Start workers
     workers = []
